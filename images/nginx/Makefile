@@ -21,7 +21,9 @@ DIR:=$(strip $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST)))))
 INIT_BUILDX=$(DIR)/../../hack/init-buildx.sh
 
 # 0.0.0 shouldn't clobber any released builds
-TAG ?= 0.0
+SHORT_SHA ?=$(shell git rev-parse --short HEAD)
+TAG ?=v$(shell date +%Y%m%d)-$(SHORT_SHA)
+
 REGISTRY ?= gcr.io/k8s-staging-ingress-nginx
 
 IMAGE = $(REGISTRY)/nginx
@@ -48,7 +50,7 @@ push: build
 ensure-buildx:
 # this is required for cloudbuild
 ifeq ("$(wildcard $(INIT_BUILDX))","")
-	@curl -sSL https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/hack/init-buildx.sh | bash
+	@curl -sSL https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/hack/init-buildx.sh | bash
 else
 	@exec $(INIT_BUILDX)
 endif

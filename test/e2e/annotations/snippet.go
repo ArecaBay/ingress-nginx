@@ -17,33 +17,91 @@ limitations under the License.
 package annotations
 
 import (
+	"net/http"
 	"strings"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 
 	"k8s.io/ingress-nginx/test/e2e/framework"
 )
 
 var _ = framework.DescribeAnnotation("configuration-snippet", func() {
-	f := framework.NewDefaultFramework("configurationsnippet")
+	f := framework.NewDefaultFramework(
+		"configurationsnippet",
+		framework.WithHTTPBunEnabled(),
+	)
 
-	ginkgo.BeforeEach(func() {
-		f.NewEchoDeployment()
-	})
-
-	ginkgo.It(`set snippet "more_set_headers "Request-Id: $req_id";" in all locations"`, func() {
+	ginkgo.It("set snippet more_set_headers in all locations", func() {
 		host := "configurationsnippet.foo.com"
+
+		f.SetNginxConfigMapData(map[string]string{
+			"allow-snippet-annotations": "true",
+		})
+		defer func() {
+			f.SetNginxConfigMapData(map[string]string{
+				"allow-snippet-annotations": "false",
+			})
+		}()
+
 		annotations := map[string]string{
-			"nginx.ingress.kubernetes.io/configuration-snippet": `
-				more_set_headers "Request-Id: $req_id";`,
+			"nginx.ingress.kubernetes.io/configuration-snippet": `more_set_headers "Foo1: Bar1";`,
 		}
 
-		ing := framework.NewSingleIngress(host, "/", host, f.Namespace, framework.EchoService, 80, annotations)
+		f.EnsureIngress(framework.NewSingleIngress(
+			host,
+			"/",
+			host,
+			f.Namespace,
+			framework.HTTPBunService,
+			80,
+			annotations))
+
+		f.WaitForNginxServer(host,
+			func(server string) bool {
+				return strings.Contains(server, `more_set_headers "Foo1: Bar1";`)
+			})
+
+		f.HTTPTestClient().
+			GET("/").
+			WithHeader("Host", host).
+			Expect().
+			Status(http.StatusOK).
+			Headers().
+			ValueEqual("Foo1", []string{"Bar1"})
+	})
+
+	ginkgo.It("drops snippet more_set_header in all locations if disabled by admin", func() {
+		host := "noconfigurationsnippet.foo.com"
+		annotations := map[string]string{
+			"nginx.ingress.kubernetes.io/configuration-snippet": `more_set_headers "Foo1: Bar1";`,
+		}
+
+		ing := framework.NewSingleIngress(
+			host,
+			"/",
+			host,
+			f.Namespace,
+			framework.HTTPBunService,
+			80,
+			annotations)
+
+		f.UpdateNginxConfigMapData("allow-snippet-annotations", "false")
+
+		// Sleep a while just to guarantee that the configmap is applied
+		framework.Sleep()
 		f.EnsureIngress(ing)
 
 		f.WaitForNginxServer(host,
 			func(server string) bool {
-				return strings.Contains(server, `more_set_headers "Request-Id: $req_id";`)
+				return !strings.Contains(server, `more_set_headers "Foo1: Bar1";`)
 			})
+
+		f.HTTPTestClient().
+			GET("/").
+			WithHeader("Host", host).
+			Expect().
+			Status(http.StatusOK).
+			Headers().
+			NotContainsKey("Foo1")
 	})
 })

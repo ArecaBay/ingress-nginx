@@ -1,11 +1,12 @@
-# Welcome
+# Overview
 
-This is the documentation for the NGINX Ingress Controller.
+This is the documentation for the Ingress NGINX Controller.
 
-It is built around the [Kubernetes Ingress resource](http://kubernetes.io/docs/user-guide/ingress/), using a [ConfigMap](https://kubernetes.io/docs/tasks/configure-pod-container/configure-pod-configmap/#understanding-configmaps-and-pods) to store the NGINX configuration.
+It is built around the [Kubernetes Ingress resource](https://kubernetes.io/docs/concepts/services-networking/ingress/), using a [ConfigMap](https://kubernetes.io/docs/concepts/configuration/configmap/) to store the controller configuration.
 
-Learn more about using Ingress on [k8s.io](http://kubernetes.io/docs/user-guide/ingress/).
+You can learn more about using [Ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/) in the official [Kubernetes documentation](https://docs.k8s.io).
 
-## Getting Started
+# Getting Started
 
 See [Deployment](./deploy/) for a whirlwind tour that will get you started.
+

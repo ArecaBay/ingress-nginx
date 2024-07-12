@@ -20,18 +20,26 @@ import (
 	"testing"
 
 	api "k8s.io/api/core/v1"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
 	"k8s.io/ingress-nginx/internal/ingress/errors"
 	"k8s.io/ingress-nginx/internal/ingress/resolver"
 )
 
+const (
+	defaultDemoSecret = "default/demo-secret"
+	off               = "off"
+)
+
 func buildIngress() *networking.Ingress {
 	defaultBackend := networking.IngressBackend{
-		ServiceName: "default-backend",
-		ServicePort: intstr.FromInt(80),
+		Service: &networking.IngressServiceBackend{
+			Name: "default-backend",
+			Port: networking.ServiceBackendPort{
+				Number: 80,
+			},
+		},
 	}
 
 	return &networking.Ingress{
@@ -40,9 +48,13 @@ func buildIngress() *networking.Ingress {
 			Namespace: api.NamespaceDefault,
 		},
 		Spec: networking.IngressSpec{
-			Backend: &networking.IngressBackend{
-				ServiceName: "default-backend",
-				ServicePort: intstr.FromInt(80),
+			DefaultBackend: &networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: "default-backend",
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
 			},
 			Rules: []networking.IngressRule{
 				{
@@ -70,27 +82,22 @@ type mockSecret struct {
 
 // GetAuthCertificate from mockSecret mocks the GetAuthCertificate for authTLS
 func (m mockSecret) GetAuthCertificate(name string) (*resolver.AuthSSLCert, error) {
-	if name != "default/demo-secret" {
+	if name != defaultDemoSecret {
 		return nil, errors.Errorf("there is no secret with name %v", name)
 	}
 
 	return &resolver.AuthSSLCert{
-		Secret:     "default/demo-secret",
+		Secret:     defaultDemoSecret,
 		CAFileName: "/ssl/ca.crt",
 		CASHA:      "abc",
 	}, nil
-
 }
 
 func TestAnnotations(t *testing.T) {
 	ing := buildIngress()
 	data := map[string]string{}
 
-	data[parser.GetAnnotationWithPrefix("auth-tls-secret")] = "default/demo-secret"
-	data[parser.GetAnnotationWithPrefix("auth-tls-verify-client")] = "off"
-	data[parser.GetAnnotationWithPrefix("auth-tls-verify-depth")] = "1"
-	data[parser.GetAnnotationWithPrefix("auth-tls-error-page")] = "ok.com/error"
-	data[parser.GetAnnotationWithPrefix("auth-tls-pass-certificate-to-upstream")] = "true"
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSSecret)] = defaultDemoSecret
 
 	ing.SetAnnotations(data)
 
@@ -105,7 +112,7 @@ func TestAnnotations(t *testing.T) {
 		t.Errorf("expected *Config but got %v", u)
 	}
 
-	secret, err := fakeSecret.GetAuthCertificate("default/demo-secret")
+	secret, err := fakeSecret.GetAuthCertificate(defaultDemoSecret)
 	if err != nil {
 		t.Errorf("unexpected error getting secret %v", err)
 	}
@@ -113,17 +120,57 @@ func TestAnnotations(t *testing.T) {
 	if u.AuthSSLCert.Secret != secret.Secret {
 		t.Errorf("expected %v but got %v", secret.Secret, u.AuthSSLCert.Secret)
 	}
-	if u.VerifyClient != "off" {
-		t.Errorf("expected %v but got %v", "off", u.VerifyClient)
+	if u.VerifyClient != "on" {
+		t.Errorf("expected %v but got %v", "on", u.VerifyClient)
 	}
 	if u.ValidationDepth != 1 {
 		t.Errorf("expected %v but got %v", 1, u.ValidationDepth)
+	}
+	if u.ErrorPage != "" {
+		t.Errorf("expected %v but got %v", "", u.ErrorPage)
+	}
+	if u.PassCertToUpstream != false {
+		t.Errorf("expected %v but got %v", false, u.PassCertToUpstream)
+	}
+	if u.MatchCN != "" {
+		t.Errorf("expected empty string, but got %v", u.MatchCN)
+	}
+
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSVerifyClient)] = off
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSVerifyDepth)] = "2"
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSErrorPage)] = "ok.com/error"
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSPassCertToUpstream)] = "true"
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSMatchCN)] = "CN=(hello-app|ok|goodbye)"
+
+	ing.SetAnnotations(data)
+
+	i, err = NewParser(fakeSecret).Parse(ing)
+	if err != nil {
+		t.Errorf("Unexpected error with ingress: %v", err)
+	}
+
+	u, ok = i.(*Config)
+	if !ok {
+		t.Errorf("expected *Config but got %v", u)
+	}
+
+	if u.AuthSSLCert.Secret != secret.Secret {
+		t.Errorf("expected %v but got %v", secret.Secret, u.AuthSSLCert.Secret)
+	}
+	if u.VerifyClient != off {
+		t.Errorf("expected %v but got %v", off, u.VerifyClient)
+	}
+	if u.ValidationDepth != 2 {
+		t.Errorf("expected %v but got %v", 2, u.ValidationDepth)
 	}
 	if u.ErrorPage != "ok.com/error" {
 		t.Errorf("expected %v but got %v", "ok.com/error", u.ErrorPage)
 	}
 	if u.PassCertToUpstream != true {
 		t.Errorf("expected %v but got %v", true, u.PassCertToUpstream)
+	}
+	if u.MatchCN != "CN=(hello-app|ok|goodbye)" {
+		t.Errorf("expected %v but got %v", "CN=(hello-app|ok|goodbye)", u.MatchCN)
 	}
 }
 
@@ -139,15 +186,24 @@ func TestInvalidAnnotations(t *testing.T) {
 	}
 
 	// Invalid NameSpace
-	data[parser.GetAnnotationWithPrefix("auth-tls-secret")] = "demo-secret"
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSSecret)] = "demo-secret"
 	ing.SetAnnotations(data)
 	_, err = NewParser(fakeSecret).Parse(ing)
 	if err == nil {
 		t.Errorf("Expected error with ingress but got nil")
 	}
 
+	// Invalid Cross NameSpace
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSSecret)] = "nondefault/demo-secret"
+	ing.SetAnnotations(data)
+	_, err = NewParser(fakeSecret).Parse(ing)
+	expErr := errors.NewLocationDenied("cross namespace secrets are not supported")
+	if err.Error() != expErr.Error() {
+		t.Errorf("received error is different from cross namespace error: %s Expected %s", err, expErr)
+	}
+
 	// Invalid Auth Certificate
-	data[parser.GetAnnotationWithPrefix("auth-tls-secret")] = "default/invalid-demo-secret"
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSSecret)] = "default/invalid-demo-secret"
 	ing.SetAnnotations(data)
 	_, err = NewParser(fakeSecret).Parse(ing)
 	if err == nil {
@@ -155,10 +211,38 @@ func TestInvalidAnnotations(t *testing.T) {
 	}
 
 	// Invalid optional Annotations
-	data[parser.GetAnnotationWithPrefix("auth-tls-secret")] = "default/demo-secret"
-	data[parser.GetAnnotationWithPrefix("auth-tls-verify-client")] = "w00t"
-	data[parser.GetAnnotationWithPrefix("auth-tls-verify-depth")] = "abcd"
-	data[parser.GetAnnotationWithPrefix("auth-tls-pass-certificate-to-upstream")] = "nahh"
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSSecret)] = "default/demo-secret"
+
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSVerifyClient)] = "w00t"
+	ing.SetAnnotations(data)
+	_, err = NewParser(fakeSecret).Parse(ing)
+	if err != nil {
+		t.Errorf("Error should be nil and verify client should be defaulted")
+	}
+
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSVerifyDepth)] = "abcd"
+	ing.SetAnnotations(data)
+	_, err = NewParser(fakeSecret).Parse(ing)
+	if err != nil {
+		t.Errorf("Error should be nil and verify depth should be defaulted")
+	}
+
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSPassCertToUpstream)] = "nahh"
+	ing.SetAnnotations(data)
+	_, err = NewParser(fakeSecret).Parse(ing)
+	if err == nil {
+		t.Errorf("Expected error with ingress but got nil")
+	}
+	delete(data, parser.GetAnnotationWithPrefix(annotationAuthTLSPassCertToUpstream))
+
+	data[parser.GetAnnotationWithPrefix(annotationAuthTLSMatchCN)] = "<script>nope</script>"
+	ing.SetAnnotations(data)
+	_, err = NewParser(fakeSecret).Parse(ing)
+	if err == nil {
+		t.Errorf("Expected error with ingress CN but got nil")
+	}
+	delete(data, parser.GetAnnotationWithPrefix(annotationAuthTLSMatchCN))
+
 	ing.SetAnnotations(data)
 
 	i, err := NewParser(fakeSecret).Parse(ing)
@@ -179,28 +263,24 @@ func TestInvalidAnnotations(t *testing.T) {
 	if u.PassCertToUpstream != false {
 		t.Errorf("expected %v but got %v", false, u.PassCertToUpstream)
 	}
-
+	if u.MatchCN != "" {
+		t.Errorf("expected empty string but got %v", u.MatchCN)
+	}
 }
 
 func TestEquals(t *testing.T) {
 	cfg1 := &Config{}
 	cfg2 := &Config{}
 
-	// Same config
-	result := cfg1.Equal(cfg1)
-	if result != true {
-		t.Errorf("Expected true")
-	}
-
 	// compare nil
-	result = cfg1.Equal(nil)
+	result := cfg1.Equal(nil)
 	if result != false {
 		t.Errorf("Expected false")
 	}
 
 	// Different Certs
 	sslCert1 := resolver.AuthSSLCert{
-		Secret:     "default/demo-secret",
+		Secret:     defaultDemoSecret,
 		CAFileName: "/ssl/ca.crt",
 		CASHA:      "abc",
 	}
@@ -219,7 +299,7 @@ func TestEquals(t *testing.T) {
 
 	// Different Verify Client
 	cfg1.VerifyClient = "on"
-	cfg2.VerifyClient = "off"
+	cfg2.VerifyClient = off
 	result = cfg1.Equal(cfg2)
 	if result != false {
 		t.Errorf("Expected false")
@@ -252,6 +332,15 @@ func TestEquals(t *testing.T) {
 		t.Errorf("Expected false")
 	}
 	cfg2.PassCertToUpstream = true
+
+	// Different MatchCN
+	cfg1.MatchCN = "CN=(hello-app|goodbye)"
+	cfg2.MatchCN = "CN=(hello-app)"
+	result = cfg1.Equal(cfg2)
+	if result != false {
+		t.Errorf("Expected false")
+	}
+	cfg2.MatchCN = "CN=(hello-app|goodbye)"
 
 	// Equal Configs
 	result = cfg1.Equal(cfg2)

@@ -17,23 +17,21 @@ limitations under the License.
 package controller
 
 import (
-	"io/ioutil"
+	"io"
 	"net/http"
 
 	admissionv1 "k8s.io/api/admission/v1"
-	admissionv1beta1 "k8s.io/api/admission/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/klog/v2"
 )
 
-var (
-	scheme = runtime.NewScheme()
-)
+var scheme = runtime.NewScheme()
 
 func init() {
-	admissionv1beta1.AddToScheme(scheme)
-	admissionv1.AddToScheme(scheme)
+	if err := admissionv1.AddToScheme(scheme); err != nil {
+		klog.ErrorS(err, "Failed to add scheme")
+	}
 }
 
 // AdmissionController checks if an object
@@ -61,7 +59,7 @@ func NewAdmissionControllerServer(ac AdmissionController) *AdmissionControllerSe
 func (acs *AdmissionControllerServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	defer req.Body.Close()
 
-	data, err := ioutil.ReadAll(req.Body)
+	data, err := io.ReadAll(req.Body)
 	if err != nil {
 		klog.ErrorS(err, "Failed to read request body")
 		w.WriteHeader(http.StatusBadRequest)

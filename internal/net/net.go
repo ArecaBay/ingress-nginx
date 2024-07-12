@@ -29,12 +29,13 @@ func IsIPV6(ip _net.IP) bool {
 
 // IsPortAvailable checks if a TCP port is available or not
 func IsPortAvailable(p int) bool {
-	conn, err := _net.Dial("tcp", fmt.Sprintf(":%v", p))
-	if err != nil {
-		return true
-	}
-	defer conn.Close()
-	return false
+	ln, err := _net.Listen("tcp", fmt.Sprintf(":%v", p))
+	defer func() {
+		if ln != nil {
+			ln.Close()
+		}
+	}()
+	return err == nil
 }
 
 // IsIPv6Enabled checks if IPV6 is enabled or not and we have
@@ -51,7 +52,10 @@ func IsIPv6Enabled() bool {
 	}
 
 	for _, addr := range addrs {
-		ip, _, _ := _net.ParseCIDR(addr.String())
+		ip, _, err := _net.ParseCIDR(addr.String())
+		if err != nil {
+			return false
+		}
 		if IsIPV6(ip) {
 			return true
 		}

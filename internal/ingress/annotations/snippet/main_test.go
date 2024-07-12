@@ -20,14 +20,14 @@ import (
 	"testing"
 
 	api "k8s.io/api/core/v1"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
 	"k8s.io/ingress-nginx/internal/ingress/resolver"
 )
 
 func TestParse(t *testing.T) {
-	annotation := parser.GetAnnotationWithPrefix("configuration-snippet")
+	annotation := parser.GetAnnotationWithPrefix(configurationSnippetAnnotation)
 
 	ap := NewParser(&resolver.Mock{})
 	if ap == nil {
@@ -54,6 +54,7 @@ func TestParse(t *testing.T) {
 
 	for _, testCase := range testCases {
 		ing.SetAnnotations(testCase.annotations)
+		//nolint:errcheck // Ignore the error since invalid cases will be checked with expected results
 		result, _ := ap.Parse(ing)
 		if result != testCase.expected {
 			t.Errorf("expected %v but returned %v, annotations: %s", testCase.expected, result, testCase.annotations)

@@ -4,10 +4,13 @@
 
 Anytime we reference a TLS secret, we mean a PEM-encoded X.509, RSA (2048) secret.
 
+!!! warning
+    Ensure that the certificate order is leaf->intermediate->root, otherwise the controller will not be able to import the certificate, and you'll see this error in the logs ```W1012 09:15:45.920000       6 backend_ssl.go:46] Error obtaining X.509 certificate: unexpected error creating SSL Cert: certificate and private key does not have a matching public key: tls: private key does not match public key```
+
 You can generate a self-signed certificate and private key with:
 
 ```bash
-$ openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout ${KEY_FILE} -out ${CERT_FILE} -subj "/CN=${HOST}/O=${HOST}"
+$ openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout ${KEY_FILE} -out ${CERT_FILE} -subj "/CN=${HOST}/O=${HOST}" -addext "subjectAltName = DNS:${HOST}"
 ```
 
 Then create the secret in the cluster via:
@@ -18,12 +21,16 @@ kubectl create secret tls ${CERT_NAME} --key ${KEY_FILE} --cert ${CERT_FILE}
 
 The resulting secret will be of type `kubernetes.io/tls`.
 
+## Host names
+
+Ensure that the relevant [ingress rules specify a matching hostname](https://kubernetes.io/docs/concepts/services-networking/ingress/#tls).
+
 ## Default SSL Certificate
 
 NGINX provides the option to configure a server as a catch-all with
-[server_name](http://nginx.org/en/docs/http/server_names.html)
+[server_name](https://nginx.org/en/docs/http/server_names.html)
 for requests that do not match any of the configured server names.
-This configuration works without out-of-the-box for HTTP traffic.
+This configuration works out-of-the-box for HTTP traffic.
 For HTTPS, a certificate is naturally required.
 
 For this reason the Ingress controller provides the flag `--default-ssl-certificate`.
@@ -34,8 +41,11 @@ If this flag is not provided NGINX will use a self-signed certificate.
 For instance, if you have a TLS secret `foo-tls` in the `default` namespace,
 add `--default-ssl-certificate=default/foo-tls` in the `nginx-controller` deployment.
 
-The default certificate will also be used for ingress `tls:` sections that do not
-have a `secretName` option.
+If the `tls:` section is not set, NGINX will provide the default certificate but will not force HTTPS redirect.
+
+On the other hand, if the `tls:` section is set - even without specifying a `secretName` option - NGINX will force HTTPS redirect. 
+
+To force redirects for Ingresses that do not specify a TLS-block at all, take a look at `force-ssl-redirect` in [ConfigMap][ConfigMap].
 
 ## SSL Passthrough
 
@@ -83,29 +93,38 @@ annotation in the particular resource.
     This can be achieved by using the `nginx.ingress.kubernetes.io/force-ssl-redirect: "true"`
     annotation in the particular resource.
 
-## Automated Certificate Management with Kube-Lego
+## Automated Certificate Management with cert-manager
 
-!!! tip
-    Kube-Lego has reached end-of-life and is being
-    replaced by [cert-manager](https://github.com/jetstack/cert-manager/).
+[cert-manager] automatically requests missing or expired certificates from a range of 
+[supported issuers][cert-manager-issuer-config] (including [Let's Encrypt]) by monitoring 
+ingress resources.
 
-[Kube-Lego] automatically requests missing or expired certificates from [Let's Encrypt]
-by monitoring ingress resources and their referenced secrets.
+To set up cert-manager you should take a look at this [full example][full-cert-manager-example].
 
-To enable this for an ingress resource you have to add an annotation:
+To enable it for an ingress resource you have to deploy cert-manager, configure a certificate 
+issuer update the manifest:
 
-```console
-kubectl annotate ing ingress-demo kubernetes.io/tls-acme="true"
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-demo
+  annotations:
+    cert-manager.io/issuer: "letsencrypt-staging" # Replace this with a production issuer once you've tested it
+    [..]
+spec:
+  tls:
+    - hosts:
+        - ingress-demo.example.com
+      secretName: ingress-demo-tls
+    [...]
 ```
-
-To setup Kube-Lego you can take a look at this [full example][full-kube-lego-example].
-The first version to fully support Kube-Lego is Nginx Ingress controller 0.8.
 
 ## Default TLS Version and Ciphers
 
 To provide the most secure baseline configuration possible,
 
-nginx-ingress defaults to using TLS 1.2 and 1.3 only, with a [secure set of TLS ciphers][ssl-ciphers].
+ingress-nginx defaults to using TLS 1.2 and 1.3 only, with a [secure set of TLS ciphers][ssl-ciphers].
 
 ### Legacy TLS
 
@@ -113,7 +132,7 @@ The default configuration, though secure, does not support some older browsers a
 
 For instance, TLS 1.1+ is only enabled by default from Android 5.0 on. At the time of writing,
 May 2018, [approximately 15% of Android devices](https://developer.android.com/about/dashboards/#Platform)
-are not compatible with nginx-ingress's default configuration.
+are not compatible with ingress-nginx's default configuration.
 
 To change this default behavior, use a [ConfigMap][ConfigMap].
 
@@ -127,15 +146,16 @@ metadata:
   name: nginx-config
 data:
   ssl-ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES256-SHA256:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA:DES-CBC3-SHA"
-  ssl-protocols: "TLSv1 TLSv1.1 TLSv1.2 TLSv1.3"
+  ssl-protocols: "TLSv1.2 TLSv1.3"
 ```
 
 
 
-[full-kube-lego-example]:https://github.com/jetstack/kube-lego/tree/master/examples
-[Kube-Lego]:https://github.com/jetstack/kube-lego
 [Let's Encrypt]:https://letsencrypt.org
 [ConfigMap]: ./nginx-configuration/configmap.md
 [ssl-ciphers]: ./nginx-configuration/configmap.md#ssl-ciphers
 [SNI]: https://en.wikipedia.org/wiki/Server_Name_Indication
 [mozilla-ssl-config-old]: https://ssl-config.mozilla.org/#server=nginx&config=old
+[cert-manager]: https://github.com/jetstack/cert-manager/
+[full-cert-manager-example]:https://cert-manager.io/docs/tutorials/acme/nginx-ingress/
+[cert-manager-issuer-config]:https://cert-manager.io/docs/configuration/

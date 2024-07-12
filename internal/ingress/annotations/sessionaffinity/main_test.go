@@ -20,17 +20,20 @@ import (
 	"testing"
 
 	api "k8s.io/api/core/v1"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
 	"k8s.io/ingress-nginx/internal/ingress/resolver"
 )
 
 func buildIngress() *networking.Ingress {
 	defaultBackend := networking.IngressBackend{
-		ServiceName: "default-backend",
-		ServicePort: intstr.FromInt(80),
+		Service: &networking.IngressServiceBackend{
+			Name: "default-backend",
+			Port: networking.ServiceBackendPort{
+				Number: 80,
+			},
+		},
 	}
 
 	return &networking.Ingress{
@@ -39,9 +42,13 @@ func buildIngress() *networking.Ingress {
 			Namespace: api.NamespaceDefault,
 		},
 		Spec: networking.IngressSpec{
-			Backend: &networking.IngressBackend{
-				ServiceName: "default-backend",
-				ServicePort: intstr.FromInt(80),
+			DefaultBackend: &networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: "default-backend",
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
 			},
 			Rules: []networking.IngressRule{
 				{
@@ -64,7 +71,6 @@ func buildIngress() *networking.Ingress {
 
 func TestIngressAffinityCookieConfig(t *testing.T) {
 	ing := buildIngress()
-
 	data := map[string]string{}
 	data[parser.GetAnnotationWithPrefix(annotationAffinityType)] = "cookie"
 	data[parser.GetAnnotationWithPrefix(annotationAffinityMode)] = "balanced"
@@ -72,10 +78,17 @@ func TestIngressAffinityCookieConfig(t *testing.T) {
 	data[parser.GetAnnotationWithPrefix(annotationAffinityCookieExpires)] = "4500"
 	data[parser.GetAnnotationWithPrefix(annotationAffinityCookieMaxAge)] = "3000"
 	data[parser.GetAnnotationWithPrefix(annotationAffinityCookiePath)] = "/foo"
+	data[parser.GetAnnotationWithPrefix(annotationAffinityCookieDomain)] = "foo.bar"
+	data[parser.GetAnnotationWithPrefix(annotationAffinityCookieSameSite)] = "Strict"
 	data[parser.GetAnnotationWithPrefix(annotationAffinityCookieChangeOnFailure)] = "true"
+	data[parser.GetAnnotationWithPrefix(annotationAffinityCookieSecure)] = "true"
 	ing.SetAnnotations(data)
 
-	affin, _ := NewParser(&resolver.Mock{}).Parse(ing)
+	affin, err := NewParser(&resolver.Mock{}).Parse(ing)
+	if err != nil {
+		t.Errorf("unexpected error parsing annotations: %v", err)
+	}
+
 	nginxAffinity, ok := affin.(*Config)
 	if !ok {
 		t.Errorf("expected a Config type")
@@ -105,7 +118,19 @@ func TestIngressAffinityCookieConfig(t *testing.T) {
 		t.Errorf("expected /foo as session-cookie-path but returned %v", nginxAffinity.Cookie.Path)
 	}
 
+	if nginxAffinity.Cookie.Domain != "foo.bar" {
+		t.Errorf("expected foo.bar as session-cookie-domain but returned %v", nginxAffinity.Cookie.Domain)
+	}
+
+	if nginxAffinity.Cookie.SameSite != "Strict" {
+		t.Errorf("expected Strict as session-cookie-same-site but returned %v", nginxAffinity.Cookie.SameSite)
+	}
+
 	if !nginxAffinity.Cookie.ChangeOnFailure {
 		t.Errorf("expected change of failure parameter set to true but returned %v", nginxAffinity.Cookie.ChangeOnFailure)
+	}
+
+	if !nginxAffinity.Cookie.Secure {
+		t.Errorf("expected secure parameter set to true but returned %v", nginxAffinity.Cookie.Secure)
 	}
 }

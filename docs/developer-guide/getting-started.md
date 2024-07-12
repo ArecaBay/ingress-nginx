@@ -1,6 +1,14 @@
-# Developing for NGINX Ingress Controller
+ Developing for Ingress-Nginx Controller
 
-This document explains how to get started with developing for NGINX Ingress controller.
+This document explains how to get started with developing for Ingress-Nginx Controller.
+
+For the really new contributors, who want to contribute to the INGRESS-NGINX project, but need help with understanding some basic concepts,
+that are needed to work with the Kubernetes ingress resource, here is a link to the [New Contributors Guide](https://github.com/kubernetes/ingress-nginx/blob/main/NEW_CONTRIBUTOR.md).
+This guide contains tips on how a http/https request travels, from a browser or a curl command,
+to the webserver process running inside a container, in a pod, in a Kubernetes cluster, but enters the cluster via a ingress resource.
+For those who are familiar with those basic networking concepts like routing of a packet with regards to a
+http request, termination of connection, reverseproxy etc. etc., you can skip this and move on to the sections below.
+(or read it anyways just for context and also provide feedbacks if any)
 
 ## Prerequisites
 
@@ -10,6 +18,10 @@ Install [Go 1.14](https://golang.org/dl/) or later.
     The project uses [Go Modules](https://github.com/golang/go/wiki/Modules)
 
 Install [Docker](https://docs.docker.com/engine/install/) (v19.03.0 or later with experimental feature on)
+
+Install [kubectl](https://kubernetes.io/docs/tasks/tools/) (1.24.0 or higher)
+
+Install [Kind](https://kind.sigs.k8s.io/)
 
 !!! important
     The majority of make tasks run as docker containers
@@ -29,6 +41,7 @@ Start a local Kubernetes cluster using [kind](https://kind.sigs.k8s.io/), build 
 ```console
 make dev-env
 ```
+- If you are working on the v1.x.x version of this controller, and you want to create a cluster with kubernetes version 1.22, then please visit the [documentation for kind](https://kind.sigs.k8s.io/docs/user/configuration/#a-note-on-cli-parameters-and-configuration-files), and look for how to set a custom image for the kind node (image: kindest/node...), in the kind config file.
 
 ### Testing
 
@@ -65,9 +78,9 @@ FOCUS="no-auth-locations" make kind-e2e-test
 !!! note
     The variable `FOCUS` defines Ginkgo [Focused Specs](https://onsi.github.io/ginkgo/#focused-specs)
 
-Valid values are defined in the describe definition of the e2e tests like [Default Backend](https://github.com/kubernetes/ingress-nginx/blob/master/test/e2e/defaultbackend/default_backend.go#L29)
+Valid values are defined in the describe definition of the e2e tests like [Default Backend](https://github.com/kubernetes/ingress-nginx/blob/main/test/e2e/defaultbackend/default_backend.go#L29)
 
-The complete list of tests can be found [here](e2e-tests.md)
+The complete list of tests can be found [here](../e2e-tests.md)
 
 ### Custom docker image
 

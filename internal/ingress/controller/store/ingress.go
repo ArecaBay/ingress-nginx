@@ -17,9 +17,9 @@ limitations under the License.
 package store
 
 import (
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/ingress-nginx/internal/ingress"
+	"k8s.io/ingress-nginx/pkg/apis/ingress"
 )
 
 // IngressLister makes a Store that lists Ingress.

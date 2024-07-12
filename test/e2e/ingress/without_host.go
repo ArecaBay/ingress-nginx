@@ -21,10 +21,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/onsi/ginkgo"
-	networking "k8s.io/api/networking/v1beta1"
+	"github.com/onsi/ginkgo/v2"
+	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"k8s.io/ingress-nginx/test/e2e/framework"
 )
@@ -62,9 +61,14 @@ var _ = framework.IngressNginxDescribe("[Ingress] definition without host", func
 				Namespace: f.Namespace,
 			},
 			Spec: networking.IngressSpec{
-				Backend: &networking.IngressBackend{
-					ServiceName: framework.EchoService,
-					ServicePort: intstr.FromInt(80),
+				IngressClassName: &f.IngressClass,
+				DefaultBackend: &networking.IngressBackend{
+					Service: &networking.IngressServiceBackend{
+						Name: framework.EchoService,
+						Port: networking.ServiceBackendPort{
+							Number: int32(80),
+						},
+					},
 				},
 				Rules: []networking.IngressRule{
 					{
@@ -89,5 +93,13 @@ var _ = framework.IngressNginxDescribe("[Ingress] definition without host", func
 			WithHeader("Host", "only-backend").
 			Expect().
 			Status(http.StatusOK)
+		// Following assertion added with respect to issue https://github.com/kubernetes/ingress-nginx/issues/8823
+		// This check ensure that ingress having defaultBackend with rules should only be added as default backend
+		// for the host mentioned in rule. It should not affect the default catch-all server_name _ block.
+		f.HTTPTestClient().
+			GET("/").
+			WithHeader("Host", "only-backend-doesnotexist").
+			Expect().
+			Status(http.StatusNotFound)
 	})
 })

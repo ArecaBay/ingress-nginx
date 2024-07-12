@@ -20,17 +20,20 @@ import (
 	"testing"
 
 	api "k8s.io/api/core/v1"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
 	"k8s.io/ingress-nginx/internal/ingress/resolver"
 )
 
 func buildIngress() *networking.Ingress {
 	defaultBackend := networking.IngressBackend{
-		ServiceName: "default-backend",
-		ServicePort: intstr.FromInt(80),
+		Service: &networking.IngressServiceBackend{
+			Name: "default-backend",
+			Port: networking.ServiceBackendPort{
+				Number: 80,
+			},
+		},
 	}
 
 	return &networking.Ingress{
@@ -39,9 +42,13 @@ func buildIngress() *networking.Ingress {
 			Namespace: api.NamespaceDefault,
 		},
 		Spec: networking.IngressSpec{
-			Backend: &networking.IngressBackend{
-				ServiceName: "default-backend",
-				ServicePort: intstr.FromInt(80),
+			DefaultBackend: &networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: "default-backend",
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
 			},
 			Rules: []networking.IngressRule{
 				{
@@ -66,10 +73,13 @@ func TestIngressAccessLogConfig(t *testing.T) {
 	ing := buildIngress()
 
 	data := map[string]string{}
-	data[parser.GetAnnotationWithPrefix("enable-access-log")] = "false"
+	data[parser.GetAnnotationWithPrefix(enableAccessLogAnnotation)] = "false"
 	ing.SetAnnotations(data)
 
-	log, _ := NewParser(&resolver.Mock{}).Parse(ing)
+	log, err := NewParser(&resolver.Mock{}).Parse(ing)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	nginxLogs, ok := log.(*Config)
 	if !ok {
 		t.Errorf("expected a Config type")
@@ -84,10 +94,13 @@ func TestIngressRewriteLogConfig(t *testing.T) {
 	ing := buildIngress()
 
 	data := map[string]string{}
-	data[parser.GetAnnotationWithPrefix("enable-rewrite-log")] = "true"
+	data[parser.GetAnnotationWithPrefix(enableRewriteLogAnnotation)] = "true"
 	ing.SetAnnotations(data)
 
-	log, _ := NewParser(&resolver.Mock{}).Parse(ing)
+	log, err := NewParser(&resolver.Mock{}).Parse(ing)
+	if err != nil {
+		t.Errorf("unexpected error parsing annotations %v", err)
+	}
 	nginxLogs, ok := log.(*Config)
 	if !ok {
 		t.Errorf("expected a Config type")
@@ -95,5 +108,26 @@ func TestIngressRewriteLogConfig(t *testing.T) {
 
 	if !nginxLogs.Rewrite {
 		t.Errorf("expected rewrite log to be enabled but it is disabled")
+	}
+}
+
+func TestInvalidBoolConfig(t *testing.T) {
+	ing := buildIngress()
+
+	data := map[string]string{}
+	data[parser.GetAnnotationWithPrefix(enableRewriteLogAnnotation)] = "blo"
+	ing.SetAnnotations(data)
+
+	log, err := NewParser(&resolver.Mock{}).Parse(ing)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	nginxLogs, ok := log.(*Config)
+	if !ok {
+		t.Errorf("expected a Config type")
+	}
+
+	if !nginxLogs.Access {
+		t.Errorf("expected access log to be enabled due to invalid config, but it is disabled")
 	}
 }

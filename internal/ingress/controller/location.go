@@ -20,10 +20,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mitchellh/copystructure"
-	networking "k8s.io/api/networking/v1beta1"
-	"k8s.io/ingress-nginx/internal/ingress"
-	"k8s.io/klog/v2"
+	networking "k8s.io/api/networking/v1"
+	"k8s.io/ingress-nginx/pkg/apis/ingress"
 )
 
 var (
@@ -73,18 +71,14 @@ func updateServerLocations(locations []*ingress.Location) []*ingress.Location {
 			continue
 		}
 
-		// copy location before any change
-		el, err := copystructure.Copy(location)
-		if err != nil {
-			klog.ErrorS(err, "copying location")
-		}
+		var el ingress.Location = *location
 
 		// normalize path. Must end in /
 		location.Path = normalizePrefixPath(location.Path)
 		newLocations = append(newLocations, location)
 
 		// add exact location
-		exactLocation := el.(*ingress.Location)
+		exactLocation := &el
 		exactLocation.PathType = &pathTypeExact
 
 		newLocations = append(newLocations, exactLocation)
@@ -106,7 +100,7 @@ func normalizePrefixPath(path string) string {
 }
 
 func needsRewrite(location *ingress.Location) bool {
-	if len(location.Rewrite.Target) > 0 && location.Rewrite.Target != location.Path {
+	if location.Rewrite.Target != "" && location.Rewrite.Target != location.Path {
 		return true
 	}
 

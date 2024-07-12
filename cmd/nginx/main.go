@@ -19,47 +19,43 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand" // #nosec
 	"net/http"
-	"net/http/pprof"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	discovery "k8s.io/apimachinery/pkg/version"
-	"k8s.io/apiserver/pkg/server/healthz"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/klog/v2"
 
-	"k8s.io/ingress-nginx/internal/file"
-	"k8s.io/ingress-nginx/internal/ingress/annotations/class"
 	"k8s.io/ingress-nginx/internal/ingress/controller"
 	"k8s.io/ingress-nginx/internal/ingress/metric"
 	"k8s.io/ingress-nginx/internal/k8s"
 	"k8s.io/ingress-nginx/internal/net/ssl"
 	"k8s.io/ingress-nginx/internal/nginx"
+	"k8s.io/ingress-nginx/pkg/util/file"
 	"k8s.io/ingress-nginx/version"
+
+	ingressflags "k8s.io/ingress-nginx/pkg/flags"
+	"k8s.io/ingress-nginx/pkg/metrics"
+	"k8s.io/ingress-nginx/pkg/util/process"
 )
 
 func main() {
 	klog.InitFlags(nil)
 
-	rand.Seed(time.Now().UnixNano())
-
 	fmt.Println(version.String())
 
-	showVersion, conf, err := parseFlags()
+	showVersion, conf, err := ingressflags.ParseFlags()
 	if showVersion {
 		os.Exit(0)
 	}
@@ -78,7 +74,7 @@ func main() {
 		handleFatalInitError(err)
 	}
 
-	if len(conf.DefaultService) > 0 {
+	if conf.DefaultService != "" {
 		err := checkService(conf.DefaultService, kubeClient)
 		if err != nil {
 			klog.Fatal(err)
@@ -87,7 +83,7 @@ func main() {
 		klog.InfoS("Valid default backend", "service", conf.DefaultService)
 	}
 
-	if len(conf.PublishService) > 0 {
+	if conf.PublishService != "" {
 		err := checkService(conf.PublishService, kubeClient)
 		if err != nil {
 			klog.Fatal(err)
@@ -104,38 +100,19 @@ func main() {
 	conf.FakeCertificate = ssl.GetFakeSSLCert()
 	klog.InfoS("SSL fake certificate created", "file", conf.FakeCertificate.PemFileName)
 
-	var isNetworkingIngressAvailable bool
-
-	isNetworkingIngressAvailable, k8s.IsIngressV1Beta1Ready, _ = k8s.NetworkingIngressAvailable(kubeClient)
-	if !isNetworkingIngressAvailable {
-		klog.Fatalf("ingress-nginx requires Kubernetes v1.14.0 or higher")
+	if !k8s.NetworkingIngressAvailable(kubeClient) {
+		klog.Fatalf("ingress-nginx requires Kubernetes v1.19.0 or higher")
 	}
 
-	if k8s.IsIngressV1Beta1Ready {
-		klog.InfoS("Enabling new Ingress features available since Kubernetes v1.18")
-		k8s.IngressClass, err = kubeClient.NetworkingV1beta1().IngressClasses().
-			Get(context.TODO(), class.IngressClass, metav1.GetOptions{})
-		if err != nil {
-			if !errors.IsNotFound(err) {
-				if !errors.IsUnauthorized(err) && !errors.IsForbidden(err) {
-					klog.Fatalf("Error searching IngressClass: %v", err)
-				}
-
-				klog.ErrorS(err, "Searching IngressClass", "class", class.IngressClass)
+	_, err = kubeClient.NetworkingV1().IngressClasses().List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			if errors.IsForbidden(err) {
+				klog.Warningf("No permissions to list and get Ingress Classes: %v, IngressClass feature will be disabled", err)
+				conf.IngressClassConfiguration.IgnoreIngressClass = true
 			}
-
-			klog.Warningf("No IngressClass resource with name %v found. Only annotation will be used.", class.IngressClass)
-
-			// TODO: remove once this is fixed in client-go
-			k8s.IngressClass = nil
-		}
-
-		if k8s.IngressClass != nil && k8s.IngressClass.Spec.Controller != k8s.IngressNGINXController {
-			klog.Errorf(`Invalid IngressClass (Spec.Controller) value "%v". Should be "%v"`, k8s.IngressClass.Spec.Controller, k8s.IngressNGINXController)
-			klog.Fatalf("IngressClass with name %v is not valid for ingress-nginx (invalid Spec.Controller)", class.IngressClass)
 		}
 	}
-
 	conf.Client = kubeClient
 
 	err = k8s.GetIngressPod(kubeClient)
@@ -145,58 +122,45 @@ func main() {
 
 	reg := prometheus.NewRegistry()
 
-	reg.MustRegister(prometheus.NewGoCollector())
-	reg.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{
+	reg.MustRegister(collectors.NewGoCollector())
+	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{
 		PidFn:        func() (int, error) { return os.Getpid(), nil },
 		ReportErrors: true,
 	}))
 
 	mc := metric.NewDummyCollector()
 	if conf.EnableMetrics {
-		mc, err = metric.NewCollector(conf.MetricsPerHost, reg)
+		mc, err = metric.NewCollector(conf.MetricsPerHost, conf.ReportStatusClasses, reg, conf.IngressClassConfiguration.Controller, *conf.MetricsBuckets, conf.ExcludeSocketMetrics)
 		if err != nil {
 			klog.Fatalf("Error creating prometheus collector:  %v", err)
 		}
 	}
-	mc.Start()
+	// Pass the ValidationWebhook status to determine if we need to start the collector
+	// for the admissionWebhook
+	mc.Start(conf.ValidationWebhook)
 
 	if conf.EnableProfiling {
-		go registerProfiler()
+		go metrics.RegisterProfiler(nginx.ProfilerAddress, nginx.ProfilerPort)
 	}
 
 	ngx := controller.NewNGINXController(conf, mc)
 
 	mux := http.NewServeMux()
-	registerHealthz(nginx.HealthPath, ngx, mux)
-	registerMetrics(reg, mux)
+	metrics.RegisterHealthz(nginx.HealthPath, mux, ngx)
+	metrics.RegisterMetrics(reg, mux)
 
-	go startHTTPServer(conf.ListenPorts.Health, mux)
-	go ngx.Start()
-
-	handleSigterm(ngx, func(code int) {
-		os.Exit(code)
-	})
-}
-
-type exiter func(code int)
-
-func handleSigterm(ngx *controller.NGINXController, exit exiter) {
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, syscall.SIGTERM)
-	<-signalChan
-	klog.InfoS("Received SIGTERM, shutting down")
-
-	exitCode := 0
-	if err := ngx.Stop(); err != nil {
-		klog.Warningf("Error during shutdown: %v", err)
-		exitCode = 1
+	_, errExists := os.Stat("/chroot")
+	if errExists == nil {
+		conf.IsChroot = true
+		go logger(conf.InternalLoggerAddress)
 	}
 
-	klog.InfoS("Handled quit, awaiting Pod deletion")
-	time.Sleep(10 * time.Second)
+	go metrics.StartHTTPServer(conf.HealthCheckHost, conf.ListenPorts.Health, mux)
+	go ngx.Start()
 
-	klog.InfoS("Exiting", "code", exitCode)
-	exit(exitCode)
+	process.HandleSigterm(ngx, conf.PostShutdownGracePeriod, func(code int) {
+		os.Exit(code)
+	})
 }
 
 // createApiserverClient creates a new Kubernetes REST client. apiserverHost is
@@ -271,7 +235,6 @@ func createApiserverClient(apiserverHost, rootCAFile, kubeConfig string) (*kuber
 		retries++
 		return false, nil
 	})
-
 	// err is returned in case of timeout in the exponential backoff (ErrWaitTimeout)
 	if err != nil {
 		return nil, lastErr
@@ -304,58 +267,6 @@ func handleFatalInitError(err error) {
 		err)
 }
 
-func registerHealthz(healthPath string, ic *controller.NGINXController, mux *http.ServeMux) {
-	// expose health check endpoint (/healthz)
-	healthz.InstallPathHandler(mux,
-		healthPath,
-		healthz.PingHealthz,
-		ic,
-	)
-}
-
-func registerMetrics(reg *prometheus.Registry, mux *http.ServeMux) {
-	mux.Handle(
-		"/metrics",
-		promhttp.InstrumentMetricHandler(
-			reg,
-			promhttp.HandlerFor(reg, promhttp.HandlerOpts{}),
-		),
-	)
-}
-
-func registerProfiler() {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/debug/pprof/", pprof.Index)
-	mux.HandleFunc("/debug/pprof/heap", pprof.Index)
-	mux.HandleFunc("/debug/pprof/mutex", pprof.Index)
-	mux.HandleFunc("/debug/pprof/goroutine", pprof.Index)
-	mux.HandleFunc("/debug/pprof/threadcreate", pprof.Index)
-	mux.HandleFunc("/debug/pprof/block", pprof.Index)
-	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-
-	server := &http.Server{
-		Addr:    fmt.Sprintf("127.0.0.1:%v", nginx.ProfilerPort),
-		Handler: mux,
-	}
-	klog.Fatal(server.ListenAndServe())
-}
-
-func startHTTPServer(port int, mux *http.ServeMux) {
-	server := &http.Server{
-		Addr:              fmt.Sprintf(":%v", port),
-		Handler:           mux,
-		ReadTimeout:       10 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      300 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-	klog.Fatal(server.ListenAndServe())
-}
-
 func checkService(key string, kubeClient *kubernetes.Clientset) error {
 	ns, name, err := k8s.ParseNameNS(key)
 	if err != nil {
@@ -369,10 +280,10 @@ func checkService(key string, kubeClient *kubernetes.Clientset) error {
 		}
 
 		if errors.IsNotFound(err) {
-			return fmt.Errorf("No service with name %v found in namespace %v: %v", name, ns, err)
+			return fmt.Errorf("no service with name %v found in namespace %v: %v", name, ns, err)
 		}
 
-		return fmt.Errorf("Unexpected error searching service with name %v in namespace %v: %v", name, ns, err)
+		return fmt.Errorf("unexpected error searching service with name %v in namespace %v: %v", name, ns, err)
 	}
 
 	return nil

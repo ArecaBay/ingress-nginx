@@ -20,39 +20,52 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/assert"
-	networkingv1beta1 "k8s.io/api/networking/v1beta1"
-	"k8s.io/apimachinery/pkg/util/intstr"
+	networking "k8s.io/api/networking/v1"
 
 	"k8s.io/ingress-nginx/test/e2e/framework"
 )
 
 var _ = framework.IngressNginxDescribe("single ingress - multiple hosts", func() {
 	f := framework.NewDefaultFramework("simh")
-
+	pathprefix := networking.PathTypePrefix
 	ginkgo.BeforeEach(func() {
-		f.NewEchoDeploymentWithNameAndReplicas("first-service", 1)
-		f.NewEchoDeploymentWithNameAndReplicas("second-service", 1)
+		f.NewEchoDeployment(framework.WithDeploymentName("first-service"))
+		f.NewEchoDeployment(framework.WithDeploymentName("second-service"))
 	})
 
 	ginkgo.It("should set the correct $service_name NGINX variable", func() {
+		f.SetNginxConfigMapData(map[string]string{
+			"allow-snippet-annotations": "true",
+		})
+		defer func() {
+			f.SetNginxConfigMapData(map[string]string{
+				"allow-snippet-annotations": "false",
+			})
+		}()
+
 		annotations := map[string]string{
 			"nginx.ingress.kubernetes.io/configuration-snippet": `more_set_input_headers "service-name: $service_name";`,
 		}
 
 		ing := framework.NewSingleIngress("simh", "/", "first.host", f.Namespace, "first-service", 80, annotations)
 
-		ing.Spec.Rules = append(ing.Spec.Rules, networkingv1beta1.IngressRule{
+		ing.Spec.Rules = append(ing.Spec.Rules, networking.IngressRule{
 			Host: "second.host",
-			IngressRuleValue: networkingv1beta1.IngressRuleValue{
-				HTTP: &networkingv1beta1.HTTPIngressRuleValue{
-					Paths: []networkingv1beta1.HTTPIngressPath{
+			IngressRuleValue: networking.IngressRuleValue{
+				HTTP: &networking.HTTPIngressRuleValue{
+					Paths: []networking.HTTPIngressPath{
 						{
-							Path: "/",
-							Backend: networkingv1beta1.IngressBackend{
-								ServiceName: "second-service",
-								ServicePort: intstr.FromInt(80),
+							Path:     "/",
+							PathType: &pathprefix,
+							Backend: networking.IngressBackend{
+								Service: &networking.IngressServiceBackend{
+									Name: "second-service",
+									Port: networking.ServiceBackendPort{
+										Number: int32(80),
+									},
+								},
 							},
 						},
 					},

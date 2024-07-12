@@ -17,13 +17,11 @@ limitations under the License.
 package portinredirect
 
 import (
-	"fmt"
 	"testing"
 
 	api "k8s.io/api/core/v1"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
 	"k8s.io/ingress-nginx/internal/ingress/defaults"
@@ -32,8 +30,12 @@ import (
 
 func buildIngress() *networking.Ingress {
 	defaultBackend := networking.IngressBackend{
-		ServiceName: "default-backend",
-		ServicePort: intstr.FromInt(80),
+		Service: &networking.IngressServiceBackend{
+			Name: "default-backend",
+			Port: networking.ServiceBackendPort{
+				Number: 80,
+			},
+		},
 	}
 
 	return &networking.Ingress{
@@ -42,9 +44,13 @@ func buildIngress() *networking.Ingress {
 			Namespace: api.NamespaceDefault,
 		},
 		Spec: networking.IngressSpec{
-			Backend: &networking.IngressBackend{
-				ServiceName: "default-backend",
-				ServicePort: intstr.FromInt(80),
+			DefaultBackend: &networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: "default-backend",
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
 			},
 			Rules: []networking.IngressRule{
 				{
@@ -77,23 +83,24 @@ func (m mockBackend) GetDefaultBackend() defaults.Backend {
 func TestPortInRedirect(t *testing.T) {
 	tests := []struct {
 		title   string
-		usePort *bool
+		usePort string
 		def     bool
 		exp     bool
 	}{
-		{"false - default false", newFalse(), false, false},
-		{"false - default true", newFalse(), true, false},
-		{"no annotation - default false", nil, false, false},
-		{"no annotation - default true", nil, true, true},
-		{"true - default true", newTrue(), true, true},
+		{"false - default false", "false", false, false},
+		{"false - default true", "false", true, false},
+		{"no annotation - default false", "", false, false},
+		{"no annotation - default false", "not-a-bool", false, false},
+		{"no annotation - default true", "", true, true},
+		{"true - default true", "true", true, true},
 	}
 
 	for _, test := range tests {
 		ing := buildIngress()
 
 		data := map[string]string{}
-		if test.usePort != nil {
-			data[parser.GetAnnotationWithPrefix("use-port-in-redirects")] = fmt.Sprintf("%v", *test.usePort)
+		if test.usePort != "" {
+			data[parser.GetAnnotationWithPrefix(portsInRedirectAnnotation)] = test.usePort
 		}
 		ing.SetAnnotations(data)
 
@@ -110,14 +117,4 @@ func TestPortInRedirect(t *testing.T) {
 			t.Errorf("%v: expected \"%v\" but \"%v\" was returned", test.title, test.exp, p)
 		}
 	}
-}
-
-func newTrue() *bool {
-	b := true
-	return &b
-}
-
-func newFalse() *bool {
-	b := false
-	return &b
 }

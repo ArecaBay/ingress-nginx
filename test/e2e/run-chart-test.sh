@@ -36,6 +36,8 @@ cleanup() {
 
 trap cleanup EXIT
 
+export KIND_CLUSTER_NAME=${KIND_CLUSTER_NAME:-ingress-nginx-dev}
+
 if ! command -v kind --version &> /dev/null; then
   echo "kind is not installed. Use the package manager or visit the official site https://kind.sigs.k8s.io/"
   exit 1
@@ -43,14 +45,24 @@ fi
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-export KIND_CLUSTER_NAME=${KIND_CLUSTER_NAME:-ingress-nginx-dev}
+# Use 1.0.0-dev to make sure we use the latest configuration in the helm template
+export TAG=1.0.0-dev
+export ARCH=${ARCH:-amd64}
+export REGISTRY=ingress-controller
+
+BASEDIR=$(dirname "$0")
+NGINX_BASE_IMAGE=$(cat $BASEDIR/../../NGINX_BASE)
+
+echo "Running e2e with nginx base image ${NGINX_BASE_IMAGE}"
+
+export NGINX_BASE_IMAGE=$NGINX_BASE_IMAGE
 
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/kind-config-$KIND_CLUSTER_NAME}"
 
 if [ "${SKIP_CLUSTER_CREATION:-false}" = "false" ]; then
   echo "[dev-env] creating Kubernetes cluster with kind"
 
-  export K8S_VERSION=${K8S_VERSION:-v1.20.2@sha256:8f7ea6e7642c0da54f04a7ee10431549c0257315b3a634f6ef2fecaaedb19bab}
+  export K8S_VERSION=${K8S_VERSION:-v1.29.2@sha256:51a1434a5397193442f0be2a297b488b6c919ce8a3931be0ce822606ea5ca245}
 
   kind create cluster \
     --verbosity=${KIND_LOG_LEVEL} \
@@ -61,16 +73,43 @@ if [ "${SKIP_CLUSTER_CREATION:-false}" = "false" ]; then
 
   echo "Kubernetes cluster:"
   kubectl get nodes -o wide
+
+fi
+
+if [ "${SKIP_IMAGE_CREATION:-false}" = "false" ]; then
+  if ! command -v ginkgo &> /dev/null; then
+    go install github.com/onsi/ginkgo/v2/ginkgo@v2.19.0
+  fi
+  echo "[dev-env] building image"
+  make -C ${DIR}/../../ clean-image build image
+fi
+
+
+KIND_WORKERS=$(kind get nodes --name="${KIND_CLUSTER_NAME}" | awk '{printf (NR>1?",":"") $1}')
+echo "[dev-env] copying docker images to cluster..."
+
+kind load docker-image --name="${KIND_CLUSTER_NAME}" --nodes=${KIND_WORKERS} ${REGISTRY}/controller:${TAG}
+
+if [ "${SKIP_CERT_MANAGER_CREATION:-false}" = "false" ]; then
+  curl -fsSL -o cmctl.tar.gz https://github.com/cert-manager/cert-manager/releases/download/v1.11.1/cmctl-linux-amd64.tar.gz
+  tar xzf cmctl.tar.gz
+  chmod +x cmctl
+ ./cmctl help
+  echo "[dev-env] apply cert-manager ..."
+  kubectl apply --wait -f https://github.com/cert-manager/cert-manager/releases/download/v1.11.0/cert-manager.yaml
+  kubectl wait --timeout=30s --for=condition=available deployment/cert-manager -n cert-manager
+  kubectl get validatingwebhookconfigurations cert-manager-webhook -ojson | jq '.webhooks[].clientConfig'
+  kubectl get endpoints -n cert-manager cert-manager-webhook
+  ./cmctl check api --wait=2m
 fi
 
 echo "[dev-env] running helm chart e2e tests..."
-# Uses a custom chart-testing image to avoid timeouts waiting for namespace deletion.
-# The changes can be found here: https://github.com/aledbf/chart-testing/commit/41fe0ae0733d0c9a538099fb3cec522e888e3d82
 docker run --rm --interactive --network host \
     --name ct \
     --volume $KUBECONFIG:/root/.kube/config \
     --volume "${DIR}/../../":/workdir \
     --workdir /workdir \
-    aledbf/chart-testing:v3.3.1-next ct install \
+    registry.k8s.io/ingress-nginx/e2e-test-runner:v20240703-195ce186@sha256:98db2302f2a548d1b0748cb4d0a381995de761e4324fef3b8296004337a9b581 \
+        ct install \
         --charts charts/ingress-nginx \
         --helm-extra-args "--timeout 60s"

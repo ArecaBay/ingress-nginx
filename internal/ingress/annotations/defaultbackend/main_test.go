@@ -20,19 +20,21 @@ import (
 	"testing"
 
 	api "k8s.io/api/core/v1"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
 	"k8s.io/ingress-nginx/internal/ingress/errors"
 	"k8s.io/ingress-nginx/internal/ingress/resolver"
-
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 func buildIngress() *networking.Ingress {
 	defaultBackend := networking.IngressBackend{
-		ServiceName: "default-backend",
-		ServicePort: intstr.FromInt(80),
+		Service: &networking.IngressServiceBackend{
+			Name: "default-backend",
+			Port: networking.ServiceBackendPort{
+				Number: 80,
+			},
+		},
 	}
 
 	return &networking.Ingress{
@@ -41,9 +43,13 @@ func buildIngress() *networking.Ingress {
 			Namespace: api.NamespaceDefault,
 		},
 		Spec: networking.IngressSpec{
-			Backend: &networking.IngressBackend{
-				ServiceName: "default-backend",
-				ServicePort: intstr.FromInt(80),
+			DefaultBackend: &networking.IngressBackend{
+				Service: &networking.IngressServiceBackend{
+					Name: "default-backend",
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
 			},
 			Rules: []networking.IngressRule{
 				{
@@ -85,21 +91,51 @@ func (m mockService) GetService(name string) (*api.Service, error) {
 func TestAnnotations(t *testing.T) {
 	ing := buildIngress()
 
-	data := map[string]string{}
-	data[parser.GetAnnotationWithPrefix("default-backend")] = "demo-service"
-	ing.SetAnnotations(data)
-
-	fakeService := &mockService{}
-	i, err := NewParser(fakeService).Parse(ing)
-	if err != nil {
-		t.Errorf("unexpected error %v", err)
+	tests := map[string]struct {
+		expectErr   bool
+		serviceName string
+	}{
+		"valid name": {
+			serviceName: "demo-service",
+			expectErr:   false,
+		},
+		"not in backend": {
+			serviceName: "demo1-service",
+			expectErr:   true,
+		},
+		"invalid dns name": {
+			serviceName: "demo-service.something.tld",
+			expectErr:   true,
+		},
+		"invalid name": {
+			serviceName: "something/xpto",
+			expectErr:   true,
+		},
+		"invalid characters": {
+			serviceName: "something;xpto",
+			expectErr:   true,
+		},
 	}
 
-	svc, ok := i.(*api.Service)
-	if !ok {
-		t.Errorf("expected *api.Service but got %v", svc)
-	}
-	if svc.Name != "demo-service" {
-		t.Errorf("expected %v but got %v", "demo-service", svc.Name)
+	for _, test := range tests {
+		data := map[string]string{}
+		data[parser.GetAnnotationWithPrefix(defaultBackendAnnotation)] = test.serviceName
+		ing.SetAnnotations(data)
+
+		fakeService := &mockService{}
+		i, err := NewParser(fakeService).Parse(ing)
+		if (err != nil) != test.expectErr {
+			t.Errorf("expected error: %t got error: %t err value: %s. %+v", test.expectErr, err != nil, err, i)
+		}
+
+		if !test.expectErr {
+			svc, ok := i.(*api.Service)
+			if !ok {
+				t.Errorf("expected *api.Service but got %v", svc)
+			}
+			if svc.Name != test.serviceName {
+				t.Errorf("expected %v but got %v", test.serviceName, svc.Name)
+			}
+		}
 	}
 }

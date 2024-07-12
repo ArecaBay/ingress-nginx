@@ -17,9 +17,10 @@ limitations under the License.
 package annotations
 
 import (
+	"net/http"
 	"strings"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 
 	"k8s.io/ingress-nginx/test/e2e/framework"
 )
@@ -41,6 +42,12 @@ var _ = framework.DescribeAnnotation("disable-access-log disable-http-access-log
 		f.WaitForNginxConfiguration(func(ngx string) bool {
 			return strings.Contains(ngx, `access_log off;`)
 		})
+
+		f.HTTPTestClient().
+			GET("/").
+			WithHeader("Host", host).
+			Expect().
+			Status(http.StatusOK)
 	})
 
 	ginkgo.It("disable-http-access-log set access_log off", func() {
@@ -53,5 +60,29 @@ var _ = framework.DescribeAnnotation("disable-access-log disable-http-access-log
 		f.WaitForNginxConfiguration(func(ngx string) bool {
 			return strings.Contains(ngx, `access_log off;`)
 		})
+
+		f.HTTPTestClient().
+			GET("/").
+			WithHeader("Host", host).
+			Expect().
+			Status(http.StatusOK)
+	})
+
+	ginkgo.It("disable-stream-access-log set access_log off", func() {
+		host := "disablehttpaccesslog.foo.com"
+
+		f.UpdateNginxConfigMapData("disable-stream-access-log", "true")
+		ing := framework.NewSingleIngress(host, "/", host, f.Namespace, framework.EchoService, 80, nil)
+		f.EnsureIngress(ing)
+
+		f.WaitForNginxConfiguration(func(ngx string) bool {
+			return strings.Contains(ngx, `access_log off;`)
+		})
+
+		f.HTTPTestClient().
+			GET("/").
+			WithHeader("Host", host).
+			Expect().
+			Status(http.StatusOK)
 	})
 })

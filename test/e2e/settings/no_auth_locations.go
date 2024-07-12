@@ -19,15 +19,14 @@ package settings
 import (
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/ingress-nginx/test/e2e/framework"
 )
 
@@ -35,7 +34,7 @@ var _ = framework.DescribeSetting("[Security] no-auth-locations", func() {
 	f := framework.NewDefaultFramework("no-auth-locations")
 
 	setting := "no-auth-locations"
-	username := "foo"
+	username := fooHost
 	password := "bar"
 	secretName := "test-secret"
 	host := "no-auth-locations"
@@ -96,16 +95,19 @@ var _ = framework.DescribeSetting("[Security] no-auth-locations", func() {
 })
 
 func buildBasicAuthIngressWithSecondPath(host, namespace, secretName, pathName string) *networking.Ingress {
+	pathtype := networking.PathTypePrefix
 	return &networking.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      host,
 			Namespace: namespace,
-			Annotations: map[string]string{"nginx.ingress.kubernetes.io/auth-type": "basic",
+			Annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/auth-type":   "basic",
 				"nginx.ingress.kubernetes.io/auth-secret": secretName,
 				"nginx.ingress.kubernetes.io/auth-realm":  "test auth",
 			},
 		},
 		Spec: networking.IngressSpec{
+			IngressClassName: framework.GetIngressClassName(namespace),
 			Rules: []networking.IngressRule{
 				{
 					Host: host,
@@ -113,17 +115,27 @@ func buildBasicAuthIngressWithSecondPath(host, namespace, secretName, pathName s
 						HTTP: &networking.HTTPIngressRuleValue{
 							Paths: []networking.HTTPIngressPath{
 								{
-									Path: "/",
+									Path:     "/",
+									PathType: &pathtype,
 									Backend: networking.IngressBackend{
-										ServiceName: framework.EchoService,
-										ServicePort: intstr.FromInt(80),
+										Service: &networking.IngressServiceBackend{
+											Name: framework.EchoService,
+											Port: networking.ServiceBackendPort{
+												Number: int32(80),
+											},
+										},
 									},
 								},
 								{
-									Path: pathName,
+									Path:     pathName,
+									PathType: &pathtype,
 									Backend: networking.IngressBackend{
-										ServiceName: framework.EchoService,
-										ServicePort: intstr.FromInt(80),
+										Service: &networking.IngressServiceBackend{
+											Name: framework.EchoService,
+											Port: networking.ServiceBackendPort{
+												Number: int32(80),
+											},
+										},
 									},
 								},
 							},
@@ -136,7 +148,7 @@ func buildBasicAuthIngressWithSecondPath(host, namespace, secretName, pathName s
 }
 
 func buildSecret(username, password, name, namespace string) *corev1.Secret {
-	out, err := exec.Command("openssl", "passwd", "-crypt", password).CombinedOutput()
+	out, err := bcrypt.GenerateFromPassword([]byte(password), 14)
 	assert.Nil(ginkgo.GinkgoT(), err, "creating password")
 
 	encpass := fmt.Sprintf("%v:%s\n", username, out)

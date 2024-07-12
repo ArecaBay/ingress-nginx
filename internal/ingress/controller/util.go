@@ -18,7 +18,6 @@ package controller
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
@@ -27,9 +26,10 @@ import (
 	"syscall"
 
 	api "k8s.io/api/core/v1"
+	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/ingress-nginx/internal/ingress"
-	"k8s.io/klog/v2"
+	"k8s.io/ingress-nginx/pkg/apis/ingress"
+	klog "k8s.io/klog/v2"
 )
 
 // newUpstream creates an upstream without servers.
@@ -47,8 +47,30 @@ func newUpstream(name string) *ingress.Backend {
 }
 
 // upstreamName returns a formatted upstream name based on namespace, service, and port
-func upstreamName(namespace string, service string, port intstr.IntOrString) string {
-	return fmt.Sprintf("%v-%v-%v", namespace, service, port.String())
+func upstreamName(namespace string, service *networking.IngressServiceBackend) string {
+	if service != nil {
+		if service.Port.Number > 0 {
+			return fmt.Sprintf("%s-%s-%d", namespace, service.Name, service.Port.Number)
+		}
+		if service.Port.Name != "" {
+			return fmt.Sprintf("%s-%s-%s", namespace, service.Name, service.Port.Name)
+		}
+	}
+	return fmt.Sprintf("%s-INVALID", namespace)
+}
+
+// upstreamServiceNameAndPort verifies if service is not nil, and then return the
+// correct serviceName and Port
+func upstreamServiceNameAndPort(service *networking.IngressServiceBackend) (string, intstr.IntOrString) {
+	if service != nil {
+		if service.Port.Number > 0 {
+			return service.Name, intstr.FromInt(int(service.Port.Number))
+		}
+		if service.Port.Name != "" {
+			return service.Name, intstr.FromString(service.Port.Name)
+		}
+	}
+	return "", intstr.IntOrString{}
 }
 
 // sysctlSomaxconn returns the maximum number of connections that can be queued
@@ -76,7 +98,7 @@ func rlimitMaxNumFiles() int {
 }
 
 const (
-	defBinary = "/usr/local/nginx/sbin/nginx"
+	defBinary = "/usr/bin/nginx"
 	cfgPath   = "/etc/nginx/nginx.conf"
 )
 
@@ -113,17 +135,19 @@ func (nc NginxCommand) ExecCommand(args ...string) *exec.Cmd {
 
 	cmdArgs = append(cmdArgs, "-c", cfgPath)
 	cmdArgs = append(cmdArgs, args...)
+	//nolint:gosec // Ignore G204 error
 	return exec.Command(nc.Binary, cmdArgs...)
 }
 
 // Test checks if config file is a syntax valid nginx configuration
 func (nc NginxCommand) Test(cfg string) ([]byte, error) {
+	//nolint:gosec // Ignore G204 error
 	return exec.Command(nc.Binary, "-c", cfg, "-t").CombinedOutput()
 }
 
 // getSysctl returns the value for the specified sysctl setting
 func getSysctl(sysctl string) (int, error) {
-	data, err := ioutil.ReadFile(path.Join("/proc/sys", sysctl))
+	data, err := os.ReadFile(path.Join("/proc/sys", sysctl))
 	if err != nil {
 		return -1, err
 	}

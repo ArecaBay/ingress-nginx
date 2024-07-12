@@ -22,7 +22,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
 	"k8s.io/ingress-nginx/cmd/plugin/request"
@@ -35,7 +36,7 @@ func CreateCommand(flags *genericclioptions.ConfigFlags) *cobra.Command {
 		Use:     "ingresses",
 		Aliases: []string{"ingress", "ing"},
 		Short:   "Provide a short summary of all of the ingress definitions",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			host, err := cmd.Flags().GetString("host")
 			if err != nil {
 				return err
@@ -73,9 +74,9 @@ func ingresses(flags *genericclioptions.ConfigFlags, host string, allNamespaces 
 
 	if host != "" {
 		rowsWithHost := make([]ingressRow, 0)
-		for _, row := range rows {
-			if row.Host == host {
-				rowsWithHost = append(rowsWithHost, row)
+		for i := range rows {
+			if rows[i].Host == host {
+				rowsWithHost = append(rowsWithHost, rows[i])
 			}
 		}
 		rows = rowsWithHost
@@ -90,7 +91,8 @@ func ingresses(flags *genericclioptions.ConfigFlags, host string, allNamespaces 
 		fmt.Fprintln(printer, "INGRESS NAME\tHOST+PATH\tADDRESSES\tTLS\tSERVICE\tSERVICE PORT\tENDPOINTS")
 	}
 
-	for _, row := range rows {
+	for i := range rows {
+		row := &rows[i]
 		var tlsMsg string
 		if row.TLS {
 			tlsMsg = "YES"
@@ -133,18 +135,18 @@ type ingressRow struct {
 func getIngressRows(ingresses *[]networking.Ingress) []ingressRow {
 	rows := make([]ingressRow, 0)
 
-	for _, ing := range *ingresses {
-
+	for i := range *ingresses {
+		ing := &(*ingresses)[i]
 		address := ""
 		for _, lbIng := range ing.Status.LoadBalancer.Ingress {
-			if len(lbIng.IP) > 0 {
+			if lbIng.IP != "" {
 				address = address + lbIng.IP + ","
 			}
-			if len(lbIng.Hostname) > 0 {
+			if lbIng.Hostname != "" {
 				address = address + lbIng.Hostname + ","
 			}
 		}
-		if len(address) > 0 {
+		if address != "" {
 			address = address[:len(address)-1]
 		}
 
@@ -157,13 +159,14 @@ func getIngressRows(ingresses *[]networking.Ingress) []ingressRow {
 
 		defaultBackendService := ""
 		defaultBackendPort := ""
-		if ing.Spec.Backend != nil {
-			defaultBackendService = ing.Spec.Backend.ServiceName
-			defaultBackendPort = ing.Spec.Backend.ServicePort.String()
+		if ing.Spec.DefaultBackend != nil {
+			name, port := serviceToNameAndPort(ing.Spec.DefaultBackend.Service)
+			defaultBackendService = name
+			defaultBackendPort = port.String()
 		}
 
 		// Handle catch-all ingress
-		if len(ing.Spec.Rules) == 0 && len(defaultBackendService) > 0 {
+		if len(ing.Spec.Rules) == 0 && defaultBackendService != "" {
 			row := ingressRow{
 				Namespace:   ing.Namespace,
 				IngressName: ing.Name,
@@ -180,7 +183,7 @@ func getIngressRows(ingresses *[]networking.Ingress) []ingressRow {
 		for _, rule := range ing.Spec.Rules {
 			_, hasTLS := tlsHosts[rule.Host]
 
-			//Handle ingress with no paths
+			// Handle ingress with no paths
 			if rule.HTTP == nil {
 				row := ingressRow{
 					Namespace:   ing.Namespace,
@@ -197,14 +200,15 @@ func getIngressRows(ingresses *[]networking.Ingress) []ingressRow {
 			}
 
 			for _, path := range rule.HTTP.Paths {
+				svcName, svcPort := serviceToNameAndPort(path.Backend.Service)
 				row := ingressRow{
 					Namespace:   ing.Namespace,
 					IngressName: ing.Name,
 					Host:        rule.Host,
 					Path:        path.Path,
 					TLS:         hasTLS,
-					ServiceName: path.Backend.ServiceName,
-					ServicePort: path.Backend.ServicePort.String(),
+					ServiceName: svcName,
+					ServicePort: svcPort.String(),
 					Address:     address,
 				}
 
@@ -214,4 +218,18 @@ func getIngressRows(ingresses *[]networking.Ingress) []ingressRow {
 	}
 
 	return rows
+}
+
+func serviceToNameAndPort(svc *networking.IngressServiceBackend) (string, intstr.IntOrString) {
+	var svcName string
+	if svc != nil {
+		svcName = svc.Name
+		if svc.Port.Number > 0 {
+			return svcName, intstr.FromInt(int(svc.Port.Number))
+		}
+		if svc.Port.Name != "" {
+			return svcName, intstr.FromString(svc.Port.Name)
+		}
+	}
+	return "", intstr.IntOrString{}
 }

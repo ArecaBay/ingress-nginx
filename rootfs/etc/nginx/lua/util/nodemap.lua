@@ -33,7 +33,7 @@ local function create_indexed_map(nodes, salt)
     count = count + 1
   end
   table.sort(hash_map, function(a, b) return a < b end);
-  for k, v in pairs(hash_map) do 
+  for k, v in pairs(hash_map) do
     ngx.log(ngx.ERR, k, v)
   end
   return hash_map
@@ -119,12 +119,28 @@ function get_length_map(map)
   return count
 end
 
+-- This function will not work efficiently if length_index>9
+local function calculateSumOfLastThreeDigits(number)
+  -- Get last three digits
+  local lastThreeDigits = number % 1000
+
+  -- Calculate the sum of the last three digits
+  local digit1 = math.floor(lastThreeDigits / 100)
+  local digit2 = math.floor((lastThreeDigits % 100) / 10)
+  local digit3 = lastThreeDigits % 10
+  local sum = digit1 + digit2 + digit3
+
+  return sum
+end
+
 function _M.find_index(self, key)
   local mod_index = 0
-  local total_endpoint = 0 
+  local total_endpoint = 0
+  local sum = 0
   local cookie_int
   cookie_int = tonumber(key)
-  mod_index = cookie_int % self.length_index
+  sum = calculateSumOfLastThreeDigits(cookie_int)
+  mod_index = sum % self.length_index
   mod_index = mod_index + 1
   return self.indexed_map[mod_index]
 end

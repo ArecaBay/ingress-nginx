@@ -171,7 +171,13 @@ function _M.balance(self)
 
   local key = self:get_cookie()
   if key then
-    upstream_from_cookie = self.instance:find_index(key)
+    cookie_name = self:cookie_name()
+    if cookie_name == "requestid" or cookie_name == "apisec_requestid"
+    then 
+      upstream_from_cookie = self.instance:find_index(key)
+    else
+      upstream_from_cookie = self.instance:find(key)
+    end
   end
 
   local last_failure = self.get_last_failure()

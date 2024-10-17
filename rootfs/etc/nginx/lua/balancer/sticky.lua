@@ -171,7 +171,7 @@ function _M.balance(self)
 
   local key = self:get_cookie()
   if key then
-    cookie_name = self:cookie_name()
+    local cookie_name = self:cookie_name()
     if cookie_name == "requestid" or cookie_name == "apisec_requestid"
     then 
       upstream_from_cookie = self.instance:find_index(key)
